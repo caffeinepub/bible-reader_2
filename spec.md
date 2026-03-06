@@ -1,43 +1,27 @@
-# Bible Reader App
+# Bible Reader
 
 ## Current State
-New project. No existing code.
+The app has all 66 books listed in the sidebar but the `bibleData.ts` only contains selected highlight verses -- not every chapter and verse for each book. Most books only have 2-3 chapters with a handful of hand-picked verses, not their complete text.
 
 ## Requested Changes (Diff)
 
 ### Add
-- Full Bible with all 66 books (39 Old Testament, 27 New Testament)
-- Book browser: sidebar/list showing all books organized by Testament
-- Chapter and verse navigation within each book
-- Text-to-speech (TTS) reader that reads the selected passage aloud using the browser's Web Speech API
-- Playback controls: Play, Pause, Stop, and reading speed control
-- Active verse highlighting while reading
-- Persistent reading position (remembers last book/chapter)
-- Search functionality to jump to any book/chapter/verse
+- Fetch the complete KJV Bible (all 66 books, 1,189 chapters, 31,102 verses) from a public domain JSON source at app startup
+- Loading state while Bible data is being fetched
+- Proper chapter-count structure: each book shows its real chapter count (e.g. Genesis has 50 chapters, Psalms 150, Revelation 22)
 
 ### Modify
-- None (new project)
+- Replace static `bibleData.ts` highlight-only data with a dynamic fetch from a public KJV JSON API (bible-api.com or raw GitHub KJV JSON)
+- The app shell, sidebar book list, and chapter counts must all reflect the real complete Bible data
+- The reader must display every verse in every chapter
+- The backend seed data call should use the complete fetched data
 
 ### Remove
-- None (new project)
+- The incomplete/partial verse data currently hardcoded in `bibleData.ts`
 
 ## Implementation Plan
-
-### Backend
-- Store Bible text data: books, chapters, verses
-- Provide query methods:
-  - Get list of all books (with testament grouping)
-  - Get chapters for a book
-  - Get verses for a chapter
-  - Search verses by keyword
-- Seed with full Bible text (KJV - public domain)
-
-### Frontend
-- Two-panel layout: left sidebar (book/chapter navigation), right main panel (verse display + TTS controls)
-- Book list grouped by Old Testament / New Testament
-- Chapter grid selector
-- Verse list with highlighted active verse during playback
-- TTS controls toolbar: Play/Pause, Stop, speed slider
-- Uses browser Web Speech API (SpeechSynthesis) for reading
-- Remembers last position in localStorage
-- Responsive and mobile-friendly
+1. Create a `useBibleData` hook that fetches complete KJV JSON from a reliable public CDN (e.g. `https://cdn.jsdelivr.net/gh/aruljohn/Bible-kjv/Bible.json` or similar)
+2. Transform the fetched data into the existing `Book[]` format used throughout the app
+3. Show a loading screen while data loads
+4. Replace all references to the static `kjvBible` import with the dynamically loaded data
+5. Keep the same UI/UX, TTS, search, and navigation -- just replace the data source

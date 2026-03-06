@@ -5,6 +5,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Slider } from "@/components/ui/slider";
 import {
+  AlertTriangle,
   ArrowLeft,
   BookMarked,
   BookOpen,
@@ -14,6 +15,7 @@ import {
   Menu,
   Pause,
   Play,
+  RefreshCw,
   Search,
   SkipBack,
   SkipForward,
@@ -25,6 +27,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Testament, kjvBible } from "./bibleData";
 import type { Book, Chapter } from "./bibleData";
+import { retryBibleLoad, useBibleLoader } from "./hooks/useBibleLoader";
 import { useAllBooks, useSeedBibleData } from "./hooks/useQueries";
 import { useTTS } from "./hooks/useTTS";
 
@@ -54,6 +57,14 @@ function saveLocalPosition(bookAbbrev: string, chapterIndex: number) {
 }
 
 export default function App() {
+  // ── Bible data loading ─────────────────────────────────────────────────────
+  const [retryKey, setRetryKey] = useState(0);
+  const { books: loadedBooks, isLoading, error } = useBibleLoader();
+
+  // The active book list: loaded data if available, placeholder otherwise
+  const activeBooks = loadedBooks.length > 0 ? loadedBooks : kjvBible;
+
+  // ── UI state ───────────────────────────────────────────────────────────────
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
   const [selectedChapterIndex, setSelectedChapterIndex] = useState(0);
   const [expandedTestament, setExpandedTestament] = useState<{
@@ -72,27 +83,45 @@ export default function App() {
   const seedMutation = useSeedBibleData();
 
   const seedMutate = seedMutation.mutate;
-  // Seed backend data if not available
-  useEffect(() => {
-    if (backendBooks !== undefined && backendBooks.length === 0) {
-      seedMutate(kjvBible as Book[]);
-    }
-  }, [backendBooks, seedMutate]);
 
-  // Load saved position
+  // Seed backend data only after full books are loaded
   useEffect(() => {
+    if (
+      loadedBooks.length > 0 &&
+      backendBooks !== undefined &&
+      backendBooks.length === 0
+    ) {
+      seedMutate(loadedBooks as Book[]);
+    }
+  }, [loadedBooks, backendBooks, seedMutate]);
+
+  // Load saved position — re-run when full data arrives so chapters populate
+  useEffect(() => {
+    if (activeBooks.length === 0) return;
     const pos = getLocalBook();
-    const book = kjvBible.find((b) => b.abbreviation === pos.bookAbbrev);
+    const book = activeBooks.find((b) => b.abbreviation === pos.bookAbbrev);
     if (book) {
       setSelectedBook(book);
       setSelectedChapterIndex(pos.chapterIndex);
       setExpandedBook(book.abbreviation);
     } else {
-      setSelectedBook(kjvBible[0]);
+      setSelectedBook(activeBooks[0]);
       setSelectedChapterIndex(0);
-      setExpandedBook(kjvBible[0].abbreviation);
+      setExpandedBook(activeBooks[0].abbreviation);
     }
-  }, []);
+  }, [activeBooks]);
+
+  // When full books load, update the selected book reference so chapters work.
+  // We compare chapter counts to avoid an infinite re-render loop: once the
+  // loaded book has more chapters than the placeholder (0), we swap it in.
+  useEffect(() => {
+    if (loadedBooks.length === 0 || !selectedBook) return;
+    const abbrev = selectedBook.abbreviation;
+    const fresh = loadedBooks.find((b) => b.abbreviation === abbrev);
+    if (fresh && fresh.chapters.length !== selectedBook.chapters.length) {
+      setSelectedBook(fresh);
+    }
+  }, [loadedBooks, selectedBook]);
 
   const currentChapter: Chapter | null =
     selectedBook?.chapters[selectedChapterIndex] ?? null;
@@ -142,12 +171,11 @@ export default function App() {
     if (selectedChapterIndex > 0) {
       handleChapterSelect(selectedChapterIndex - 1);
     } else {
-      // Go to previous book
-      const bookIdx = kjvBible.findIndex(
+      const bookIdx = activeBooks.findIndex(
         (b) => b.abbreviation === selectedBook.abbreviation,
       );
       if (bookIdx > 0) {
-        const prevBook = kjvBible[bookIdx - 1];
+        const prevBook = activeBooks[bookIdx - 1];
         tts.stop();
         setSelectedBook(prevBook);
         setSelectedChapterIndex(prevBook.chapters.length - 1);
@@ -155,19 +183,24 @@ export default function App() {
         saveLocalPosition(prevBook.abbreviation, prevBook.chapters.length - 1);
       }
     }
-  }, [selectedBook, selectedChapterIndex, handleChapterSelect, tts]);
+  }, [
+    selectedBook,
+    selectedChapterIndex,
+    handleChapterSelect,
+    tts,
+    activeBooks,
+  ]);
 
   const handleNextChapter = useCallback(() => {
     if (!selectedBook) return;
     if (selectedChapterIndex < selectedBook.chapters.length - 1) {
       handleChapterSelect(selectedChapterIndex + 1);
     } else {
-      // Go to next book
-      const bookIdx = kjvBible.findIndex(
+      const bookIdx = activeBooks.findIndex(
         (b) => b.abbreviation === selectedBook.abbreviation,
       );
-      if (bookIdx < kjvBible.length - 1) {
-        const nextBook = kjvBible[bookIdx + 1];
+      if (bookIdx < activeBooks.length - 1) {
+        const nextBook = activeBooks[bookIdx + 1];
         tts.stop();
         setSelectedBook(nextBook);
         setSelectedChapterIndex(0);
@@ -175,7 +208,13 @@ export default function App() {
         saveLocalPosition(nextBook.abbreviation, 0);
       }
     }
-  }, [selectedBook, selectedChapterIndex, handleChapterSelect, tts]);
+  }, [
+    selectedBook,
+    selectedChapterIndex,
+    handleChapterSelect,
+    tts,
+    activeBooks,
+  ]);
 
   const handleSearch = useCallback(() => {
     setActiveSearch(searchQuery.trim());
@@ -192,7 +231,7 @@ export default function App() {
       text: string;
     }> = [];
 
-    for (const book of kjvBible) {
+    for (const book of activeBooks) {
       for (let ci = 0; ci < book.chapters.length; ci++) {
         const chapter = book.chapters[ci];
         for (let vi = 0; vi < chapter.verses.length; vi++) {
@@ -213,17 +252,87 @@ export default function App() {
       if (results.length >= 50) break;
     }
     return results;
-  }, [activeSearch])();
+  }, [activeSearch, activeBooks])();
 
-  const oldTestamentBooks = kjvBible.filter(
+  const oldTestamentBooks = activeBooks.filter(
     (b) => b.testament === Testament.Old,
   );
-  const newTestamentBooks = kjvBible.filter(
+  const newTestamentBooks = activeBooks.filter(
     (b) => b.testament === Testament.New,
   );
 
   const isSearchMode = activeSearch.length >= 2;
 
+  // ── Full-screen loading screen ─────────────────────────────────────────────
+  if (isLoading) {
+    return (
+      <div
+        className="min-h-screen bg-background flex flex-col items-center justify-center gap-6"
+        data-ocid="app.loading_state"
+      >
+        <img
+          src="/assets/generated/bible-logo-transparent.dim_80x80.png"
+          alt="Sacred Scripture"
+          className="h-16 w-16 rounded-xl opacity-80"
+        />
+        <div className="text-center space-y-2">
+          <h1 className="font-display text-3xl font-semibold text-primary glow-text">
+            Sacred Scripture
+          </h1>
+          <p className="text-sm text-muted-foreground">King James Version</p>
+        </div>
+        <div className="flex items-center gap-3 text-muted-foreground">
+          <Loader2 className="h-5 w-5 animate-spin text-primary/70" />
+          <span className="text-sm font-medium">Loading scriptures…</span>
+        </div>
+        {/* Progress bar decoration */}
+        <div className="w-48 h-0.5 bg-border rounded-full overflow-hidden">
+          <motion.div
+            className="h-full bg-primary/60 rounded-full"
+            initial={{ x: "-100%" }}
+            animate={{ x: "100%" }}
+            transition={{
+              repeat: Number.POSITIVE_INFINITY,
+              duration: 1.6,
+              ease: "easeInOut",
+            }}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // ── Error screen ───────────────────────────────────────────────────────────
+  if (error) {
+    return (
+      <div
+        className="min-h-screen bg-background flex flex-col items-center justify-center gap-6 px-4"
+        data-ocid="app.error_state"
+      >
+        <AlertTriangle className="h-12 w-12 text-destructive/70" />
+        <div className="text-center space-y-2 max-w-sm">
+          <h2 className="font-display text-2xl font-semibold text-foreground">
+            Could not load scriptures
+          </h2>
+          <p className="text-sm text-muted-foreground">{error}</p>
+        </div>
+        <Button
+          onClick={() => {
+            retryBibleLoad();
+            setRetryKey((k) => k + 1);
+          }}
+          className="gap-2"
+          data-ocid="app.retry.button"
+          key={retryKey}
+        >
+          <RefreshCw className="h-4 w-4" />
+          Try Again
+        </Button>
+      </div>
+    );
+  }
+
+  // ── Main app ───────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-background flex flex-col noise-bg">
       {/* Header */}
@@ -715,7 +824,7 @@ export default function App() {
                     <div className="ornament mt-4 text-primary/30 text-lg" />
                   </header>
 
-                  {/* Verses */}
+                  {/* Verses or loading state */}
                   {currentChapter ? (
                     <div className="space-y-1">
                       {currentChapter.verses.map((verse, vIdx) => {
@@ -766,11 +875,15 @@ export default function App() {
                       })}
                     </div>
                   ) : (
+                    /* Book has no chapters yet (still loading) */
                     <div
-                      className="flex items-center justify-center py-12"
+                      className="flex flex-col items-center justify-center py-16 gap-4"
                       data-ocid="reader.loading_state"
                     >
                       <Loader2 className="h-8 w-8 animate-spin text-primary/50" />
+                      <p className="text-sm text-muted-foreground">
+                        Loading chapter…
+                      </p>
                     </div>
                   )}
 
@@ -870,7 +983,7 @@ function BookNavItem({
       </button>
 
       <AnimatePresence initial={false}>
-        {isExpanded && (
+        {isExpanded && book.chapters.length > 0 && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
@@ -895,6 +1008,20 @@ function BookNavItem({
                   {chapter.number.toString()}
                 </button>
               ))}
+            </div>
+          </motion.div>
+        )}
+        {isExpanded && book.chapters.length === 0 && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="overflow-hidden"
+          >
+            <div className="px-4 pb-2 pt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Loading…
             </div>
           </motion.div>
         )}
