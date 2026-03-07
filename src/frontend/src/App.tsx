@@ -9,6 +9,7 @@ import {
   ArrowLeft,
   BookMarked,
   BookOpen,
+  Check,
   ChevronDown,
   ChevronRight,
   Loader2,
@@ -17,6 +18,7 @@ import {
   Play,
   RefreshCw,
   Search,
+  Share2,
   SkipBack,
   SkipForward,
   Square,
@@ -56,6 +58,29 @@ function saveLocalPosition(bookAbbrev: string, chapterIndex: number) {
   } catch {}
 }
 
+function getUrlPosition(): Position | null {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const book = params.get("book");
+    const chapter = params.get("chapter");
+    if (book) {
+      return {
+        bookAbbrev: book.toLowerCase(),
+        chapterIndex: chapter ? Math.max(0, Number.parseInt(chapter, 10)) : 0,
+      };
+    }
+  } catch {}
+  return null;
+}
+
+function syncUrl(bookAbbrev: string, chapterIndex: number) {
+  const params = new URLSearchParams();
+  params.set("book", bookAbbrev);
+  params.set("chapter", chapterIndex.toString());
+  const newUrl = `${window.location.pathname}?${params.toString()}`;
+  window.history.replaceState(null, "", newUrl);
+}
+
 export default function App() {
   // ── Bible data loading ─────────────────────────────────────────────────────
   const [retryKey, setRetryKey] = useState(0);
@@ -76,6 +101,7 @@ export default function App() {
   const [activeSearch, setActiveSearch] = useState("");
   const [ttsRate, setTtsRate] = useState(1);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
   const verseRefs = useRef<(HTMLDivElement | null)[]>([]);
   const readerRef = useRef<HTMLDivElement>(null);
 
@@ -96,13 +122,19 @@ export default function App() {
   }, [loadedBooks, backendBooks, seedMutate]);
 
   // Load saved position — re-run when full data arrives so chapters populate
+  // URL params take priority over localStorage
   useEffect(() => {
     if (activeBooks.length === 0) return;
-    const pos = getLocalBook();
+    const urlPos = getUrlPosition();
+    const pos = urlPos ?? getLocalBook();
     const book = activeBooks.find((b) => b.abbreviation === pos.bookAbbrev);
     if (book) {
       setSelectedBook(book);
-      setSelectedChapterIndex(pos.chapterIndex);
+      const chIdx = Math.min(
+        pos.chapterIndex,
+        Math.max(0, book.chapters.length - 1),
+      );
+      setSelectedChapterIndex(chIdx);
       setExpandedBook(book.abbreviation);
     } else {
       setSelectedBook(activeBooks[0]);
@@ -122,6 +154,12 @@ export default function App() {
       setSelectedBook(fresh);
     }
   }, [loadedBooks, selectedBook]);
+
+  // Sync URL whenever the reading position changes
+  useEffect(() => {
+    if (!selectedBook) return;
+    syncUrl(selectedBook.abbreviation, selectedChapterIndex);
+  }, [selectedBook, selectedChapterIndex]);
 
   const currentChapter: Chapter | null =
     selectedBook?.chapters[selectedChapterIndex] ?? null;
@@ -215,6 +253,36 @@ export default function App() {
     tts,
     activeBooks,
   ]);
+
+  const handleShare = useCallback(async () => {
+    if (!selectedBook) return;
+    const title = `${selectedBook.name} ${currentChapter ? currentChapter.number.toString() : ""} – Sacred Scripture`;
+    const url = window.location.href;
+
+    if (navigator.share) {
+      try {
+        await navigator.share({ title, url });
+      } catch {
+        // User cancelled or share failed — no-op
+      }
+    } else {
+      try {
+        await navigator.clipboard.writeText(url);
+        setShareCopied(true);
+        setTimeout(() => setShareCopied(false), 2000);
+      } catch {
+        // Fallback: select the URL from a temporary input
+        const input = document.createElement("input");
+        input.value = url;
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand("copy");
+        document.body.removeChild(input);
+        setShareCopied(true);
+        setTimeout(() => setShareCopied(false), 2000);
+      }
+    }
+  }, [selectedBook, currentChapter]);
 
   const handleSearch = useCallback(() => {
     setActiveSearch(searchQuery.trim());
@@ -369,6 +437,39 @@ export default function App() {
               </Badge>
             </div>
           )}
+
+          {/* Share button */}
+          <div className="relative flex items-center">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 shrink-0"
+              onClick={handleShare}
+              disabled={!selectedBook}
+              title="Share this passage"
+              aria-label="Share this passage"
+              data-ocid="header.share.button"
+            >
+              {shareCopied ? (
+                <Check className="h-4 w-4 text-green-500" />
+              ) : (
+                <Share2 className="h-4 w-4" />
+              )}
+            </Button>
+            <AnimatePresence>
+              {shareCopied && (
+                <motion.span
+                  initial={{ opacity: 0, y: 4, scale: 0.9 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: -4, scale: 0.9 }}
+                  transition={{ duration: 0.15 }}
+                  className="absolute -bottom-7 left-1/2 -translate-x-1/2 whitespace-nowrap text-xs bg-card border border-border text-foreground px-2 py-0.5 rounded shadow-sm pointer-events-none"
+                >
+                  Copied!
+                </motion.span>
+              )}
+            </AnimatePresence>
+          </div>
         </div>
       </header>
 
